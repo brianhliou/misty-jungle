@@ -1,0 +1,15 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The UCI binary #[path]-includes the engine core, so it builds without Python
+      # and its test module carries the engine's unit + tablebase-parity tests.
+      - run: cargo build -p jungle-engine --release
+      - run: cargo test -p jungle-engine --release

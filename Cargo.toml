@@ -1,0 +1,11 @@
+# Workspace: the engine core + Python (PyO3) bindings (`jungle_rust`) and the
+# standalone UCI binary (`jungle-engine`). The binary `#[path]`-includes the engine
+# core directly, so it has no crate dependency on `jungle_rust` and builds without
+# Python: `cargo build -p jungle-engine` never compiles the PyO3 extension.
+[workspace]
+members = ["jungle_rust", "jungle-engine"]
+resolver = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1

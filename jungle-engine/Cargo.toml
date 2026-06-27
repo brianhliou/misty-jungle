@@ -1,0 +1,9 @@
+[package]
+name = "jungle-engine"
+version = "0.0.1"
+edition = "2021"
+description = "MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine."
+
+[[bin]]
+name = "jungle-engine"
+path = "src/main.rs"

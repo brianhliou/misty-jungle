@@ -1,0 +1,11 @@
+[package]
+name = "jungle_rust"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+name = "jungle_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }

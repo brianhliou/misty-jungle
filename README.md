@@ -1,60 +1,64 @@
 # MistyJungle
 
 [![ci](https://github.com/brianhliou/misty-jungle/actions/workflows/ci.yml/badge.svg)](https://github.com/brianhliou/misty-jungle/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/brianhliou/misty-jungle)](https://github.com/brianhliou/misty-jungle/releases/latest)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A [Dou Shou Qi](https://en.wikipedia.org/wiki/Jungle_(board_game)) (Jungle, or Animal Chess) engine in Rust:
-classical αβ search with a transposition table, iterative deepening, quiescence, and a handcrafted
-evaluation. No neural network. It ships as a tiny UCI binary; the same search core is exposed to Python via PyO3.
+A classical [Dou Shou Qi](https://en.wikipedia.org/wiki/Jungle_(board_game)) (Jungle, or Animal
+Chess) engine in Rust: alpha-beta search with a transposition table, iterative deepening,
+quiescence, and a handcrafted evaluation. No neural network. It ships as a small UCI binary,
+with the same search core exposed to Python via PyO3.
 
-Dou Shou Qi is a chase game on a 7×9 board. Each side has eight animals, ranked rat, cat, dog, wolf,
-leopard, tiger, lion, elephant. A higher animal captures a lower one, with one twist that drives the
-whole game: the rat captures the elephant. Two rivers split the board and only the rat may swim them;
-the lion and tiger leap a river lengthwise. You win by stepping into the enemy den or capturing every
-enemy piece. Material matters enormously, but a single rat can hold off an elephant, and a piece near
-the enemy den is often worth more than anything it could capture.
+<p align="center">
+  <a href="https://mistboard.com/?play=computer&gameSpecId=jungle">
+    <img src="assets/game.webp" alt="Misty Jungle level 3 beating level 2 in a full game, ending in a den win" width="440">
+  </a>
+  <br>
+  <sub><i>Misty Jungle (level 3, red) vs level 2 — a full game, won by marching into the den.</i></sub>
+</p>
 
-The full build story is on my blog:
-[The strongest open Dou Shou Qi engine I could build](https://brianhliou.com/posts/strong-dou-shou-qi-engine/).
+**Play it in your browser:** challenge MistyJungle on
+[mistboard.com](https://mistboard.com/?play=computer&gameSpecId=jungle). No install required.
 
-## Strength (honest)
+## The game
 
-A strong αβ engine, measured rather than asserted:
+Dou Shou Qi is a 7×9 race-and-capture game. Eight animals rank from rat to elephant, and a higher animal
+captures a lower one, with one twist: the rat captures the elephant. Rivers split the board and
+only the rat may swim them; lions and tigers leap across. You win by reaching the enemy den or
+capturing every piece.
 
-- **Open field:** even to slightly ahead of the strongest open engine I could find and run, over 200 games,
-  with zero rule disagreements between the two independent rule implementations.
-- **Endgame:** provably near-perfect. Across 800 four-piece positions checked against an exact retrograde
-  tablebase, the search never chose a move that turned a win into a loss; at five and six pieces it agreed
-  with an eight-times-deeper search on better than 99% of positions.
-- **Search polish:** late-move reductions, killer/history ordering, and principal-variation search were
-  worth about +49 Elo (paired self-play, sign-tested on decisive games).
+## Strength
 
-What it does **not** have is a human rating, and it won't until a serious human match earns one. I also
-built endgame tablebases and a residual neural-network evaluation; at this engine's strength neither beat
-the handcrafted version, which is most of what the blog post is about.
+Against the strongest open-source Dou Shou Qi engine I could find and run, MistyJungle scored
+W11-L2-D187 over 200 games, about +16 Elo in a drawish game. Its four-piece endgame play matches
+exact retrograde tablebases with no win, draw, or loss errors.
+
+Full build report:
+[Building a Dou Shou Qi Engine](https://brianhliou.com/posts/building-dou-shou-qi-engine/).
 
 ## Build
 
-The UCI binary needs only a Rust toolchain (no Python):
+A prebuilt UCI binary ships with each [release](https://github.com/brianhliou/misty-jungle/releases/latest).
+To build from source you need only a Rust toolchain:
 
 ```bash
 cargo build -p jungle-engine --release
 ./target/release/jungle-engine
 ```
 
-It speaks a minimal UCI-style protocol: `position`, then `go [movetime <ms>] [nodes <n>]`, and replies
-`bestmove <uci>`. Strength is a node budget, which makes results reproducible across machines.
+It speaks a minimal UCI-style protocol: `position`, then `go [movetime <ms>] [nodes <n>]`,
+replying `bestmove <uci>`. Strength is a node budget, so results are reproducible across machines.
 
-The Python bindings (`jungle_rust`, a PyO3 extension) build with [maturin](https://github.com/PyO3/maturin):
+The Python bindings (`jungle_rust`) build with [maturin](https://github.com/PyO3/maturin):
 
 ```bash
-maturin develop --release   # inside a venv, from jungle_rust/
+maturin develop --release
 ```
 
 ## Layout
 
-- `jungle_rust/` — the engine core (`src/engine.rs`) plus PyO3 bindings (`src/lib.rs`).
-- `jungle-engine/` — the standalone UCI binary, which `#[path]`-includes the engine core directly.
+- `jungle_rust/`: the engine core (`src/engine.rs`) and the PyO3 bindings (`src/lib.rs`).
+- `jungle-engine/`: the UCI binary, which `#[path]`-includes the engine core.
 
 ## License
 

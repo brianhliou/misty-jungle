@@ -10,10 +10,14 @@
 //!   isready                          -> readyok
 //!   ucinewgame                       -> clear position
 //!   position fen <FEN> [moves ...]   -> store the position (perfect-info: full board, no redaction)
-//!   go [movetime <ms>] [nodes <n>]   -> search, emit "bestmove <uci>" (or "(none)")
+//!   go [movetime <ms>] [nodes <n>]   -> search, emit "info score cp <n> pv <uci>" then
+//!                                       "bestmove <uci>" (or "bestmove (none)" at a terminal)
 //!   quit                             -> exit
 //!
-//! NOTE (scaffold): search is a stub returning "(none)" until P1c (movegen) + P1e (search) land.
+//! The `info … score cp` line is what the platform's whole-game analysis reads (the move
+//! alone drives PvE play; analysis needs the position's evaluation). Score is side-to-move
+//! POV in the search's native units (WIN = 1_000_000); the analysis layer owns POV
+//! normalization + the win% curve, so the raw score is emitted as-is.
 
 #[path = "../../jungle_rust/src/engine.rs"]
 #[allow(dead_code)] // engine.rs also exposes the PyO3-facing helpers, unused here
@@ -21,7 +25,7 @@ mod engine;
 
 use std::io::{self, BufRead, Write};
 
-const ENGINE_NAME: &str = "MistyJungle 0.0.1";
+const ENGINE_NAME: &str = "MistyJungle 0.0.2";
 const DEFAULT_MOVETIME_MS: u64 = 1000;
 const DEFAULT_NODES: u64 = 1_000_000;
 
@@ -70,18 +74,21 @@ fn main() {
                         _ => {}
                     }
                 }
-                let mv = match &current {
+                match &current {
                     Some(p) => {
-                        let m = engine::best_move(p, nodes, movetime);
+                        let (m, score) = engine::best_move_scored(p, nodes, movetime);
                         if m.0 == 255 {
-                            "(none)".to_string()
+                            println!("bestmove (none)");
                         } else {
-                            engine::move_to_uci(m)
+                            let uci = engine::move_to_uci(m);
+                            // Side-to-move POV score; the analysis layer normalizes POV and
+                            // maps it through the win% curve (large win/loss magnitudes clamp).
+                            println!("info score cp {score} pv {uci}");
+                            println!("bestmove {uci}");
                         }
                     }
-                    None => "(none)".to_string(),
-                };
-                println!("bestmove {mv}");
+                    None => println!("bestmove (none)"),
+                }
             }
             "quit" => break,
             _ => {}

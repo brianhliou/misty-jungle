@@ -13,7 +13,28 @@
 //! FEN + move contract: docs/engine/jungle-engine-build-scope-2026-06-25.md §2.
 
 use std::collections::HashMap;
+
+// Time source. Native targets use the real monotonic clock. On wasm32 (the in-browser
+// client engine), `std::time::Instant::now()` panics — there is no monotonic clock in
+// `wasm32-unknown-unknown` — so we substitute a no-op clock. The wasm shim always drives
+// search by the node budget (it passes time_ms = 0), and `tick()` guards its wall-clock
+// branch on `time_ms > 0`, so `elapsed()` is never consulted. Native behavior (UCI binary,
+// PyO3 bindings) is unchanged.
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct Instant;
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Instant
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(0)
+    }
+}
 
 pub const W: usize = 7;
 pub const H: usize = 9;
@@ -621,7 +642,9 @@ struct Budget {
 impl Budget {
     fn tick(&mut self) -> bool {
         self.nodes += 1;
-        if self.nodes & 1023 == 0 && self.start.elapsed().as_millis() >= self.time_ms {
+        // Guard the wall-clock branch on time_ms > 0 so time_ms = 0 means "node budget only"
+        // (the wasm client engine passes 0; wasm has no monotonic clock — see the Instant shim).
+        if self.time_ms > 0 && self.nodes & 1023 == 0 && self.start.elapsed().as_millis() >= self.time_ms {
             self.aborted = true;
         }
         if self.nodes > self.cap {
@@ -1000,6 +1023,95 @@ pub fn best_move_scored_ext(
         }
     }
     (best, best_score)
+}
+
+/// Exact per-root-move values for in-browser MultiPV (the WebAssembly client engine). Runs the
+/// SAME iterative-deepening negamax + TT + quiescence as `best_move_scored_ext`, but searches
+/// every root move with a FULL window (`-INF..INF`) instead of narrowing alpha across siblings,
+/// so each move gets an exact value rather than a fail-low bound past the best one. Handcrafted
+/// eval, no net/tablebase (the browser build has neither). `time_ms = 0` = node-budget-only.
+///
+/// Returns `(from, to, score, depth_reached)` sorted best-first, where `score` is the
+/// side-to-move-POV native score (WIN = 1_000_000; the caller maps it through the win% curve).
+/// Empty when the position is terminal (no legal move).
+pub fn root_move_values(p: &Parsed, node_budget: u64, time_ms: u64) -> Vec<(u8, u8, i32, i32)> {
+    let root = legal_moves(p);
+    if root.is_empty() {
+        return Vec::new();
+    }
+    let (z, side) = build_zobrist();
+    let key = zkey(p, &z, side);
+    let mut tt = vec![TtEntry::default(); TT_SIZE];
+    let mut budget = Budget {
+        nodes: 0,
+        cap: node_budget,
+        start: Instant::now(),
+        time_ms: time_ms as u128,
+        aborted: false,
+        rep_seed: Vec::new(),
+        path: Vec::new(),
+        contempt: 0,
+        killers: vec![[(255, 255); 2]; MAX_DEPTH as usize + 8],
+        history: vec![0i32; 63 * 63],
+        ext: true,
+    };
+    // Best-first accumulator, replaced wholesale after each fully-completed depth.
+    let mut values: Vec<(u8, u8, i32)> = root.iter().map(|&m| (m.0, m.1, -INF)).collect();
+    let mut depth_reached = 0i32;
+
+    for depth in 1..=MAX_DEPTH {
+        budget.path.clear();
+        budget.path.push(key); // root key on the path so a line returning here is a repetition
+        let tt_mv = {
+            let e = &tt[(key & TT_MASK) as usize];
+            if e.flag != 0 && e.key == key {
+                Some(e.mv)
+            } else {
+                None
+            }
+        };
+        let moves = ordered_moves_ext(p, tt_mv, &budget.killers[0], &budget.history);
+        let mut depth_vals: Vec<(u8, u8, i32)> = Vec::with_capacity(moves.len());
+        for m in &moves {
+            let child = make_move(p, *m);
+            let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
+                WIN // den entry or captured the opponent's last piece
+            } else if child.progress >= 100 {
+                0 // no-progress draw
+            } else {
+                // FULL window (not -INF..-alpha): every root move gets its exact value.
+                -negamax(&child, None, None, depth - 1, -INF, INF, 1, &z, side, &mut tt, &mut budget)
+            };
+            if budget.aborted {
+                break;
+            }
+            depth_vals.push((m.0, m.1, val));
+        }
+        if budget.aborted {
+            break; // discard this incomplete depth, keep the previous depth's values
+        }
+        depth_vals.sort_by(|a, b| b.2.cmp(&a.2).then((a.0, a.1).cmp(&(b.0, b.1))));
+        // Seed the root TT with this depth's best so the next depth orders it first.
+        if let Some(&(bf, bt, bv)) = depth_vals.first() {
+            tt[(key & TT_MASK) as usize] = TtEntry {
+                key,
+                depth,
+                value: bv,
+                flag: 1,
+                mv: (bf, bt),
+            };
+        }
+        values = depth_vals;
+        depth_reached = depth;
+        if values.first().map(|v| v.2 >= WIN - MAX_DEPTH).unwrap_or(false) {
+            break; // forced win found — no deeper search needed
+        }
+    }
+
+    values
+        .into_iter()
+        .map(|(f, t, v)| (f, t, v, depth_reached))
+        .collect()
 }
 
 // ── Endgame tablebase (P2 first rung: self-contained WDL for 2-piece sets) ────

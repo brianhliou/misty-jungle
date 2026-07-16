@@ -3,7 +3,7 @@
 # core directly, so it has no crate dependency on `jungle_rust` and builds without
 # Python: `cargo build -p jungle-engine` never compiles the PyO3 extension.
 [workspace]
-members = ["jungle_rust", "jungle-engine"]
+members = ["jungle_rust", "jungle-engine", "jungle-wasm"]
 resolver = "2"
 
 [profile.release]

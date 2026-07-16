@@ -1,0 +1,20 @@
+[package]
+name = "jungle-wasm"
+version = "0.0.2"
+edition = "2021"
+authors = ["Brian Liou"]
+description = "MistyJungle — WebAssembly build of the vanilla Jungle (Dou Shou Qi) engine core for the in-browser review/analysis panel (client-side MultiPV)."
+license = "MIT"
+repository = "https://github.com/brianhliou/misty-jungle"
+
+# Like `jungle-engine`, this crate `#[path]`-includes the engine core directly (a single
+# self-contained `engine.rs` — no game/endgame/flatdb split, no rayon), so it has no crate
+# dependency on `jungle_rust` and never pulls in PyO3. Vanilla Jungle is perfect-information,
+# so there is no redaction and no tablebase in the browser (`net`/`tb` are always `None`).
+# Build with: `wasm-pack build jungle-wasm --target web --release`.
+[lib]
+name = "jungle_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"

@@ -55,10 +55,22 @@ The Python bindings (`jungle_rust`) build with [maturin](https://github.com/PyO3
 maturin develop --release
 ```
 
+The browser build is single-threaded WebAssembly:
+
+```bash
+wasm-pack build jungle-wasm --target web --release
+```
+
+It exposes one-shot `analyze` plus a stateful `AnalysisSession`. Repeated bounded
+`step(nodes)` calls preserve iterative-deepening state, the transposition table, Zobrist
+state, and move-ordering history while giving the browser a cancellation boundary between
+slices.
+
 ## Layout
 
 - `jungle_rust/`: the engine core (`src/engine.rs`) and the PyO3 bindings (`src/lib.rs`).
 - `jungle-engine/`: the UCI binary, which `#[path]`-includes the engine core.
+- `jungle-wasm/`: the wasm-bindgen browser API, including incremental analysis sessions.
 
 ## License
 

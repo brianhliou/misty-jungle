@@ -20,6 +20,22 @@ mod engine;
 
 use wasm_bindgen::prelude::*;
 
+fn analysis_json(ranked: &[(u8, u8, i32, i32)], multipv: u32, nodes: u64) -> String {
+    let take = (multipv.max(1) as usize).min(ranked.len());
+    let mut out = format!("{{\"nodes\":{nodes},\"lines\":[");
+    for (i, &(from, to, score, depth)) in ranked.iter().take(take).enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let uci = engine::move_to_uci((from, to));
+        out.push_str(&format!(
+            "{{\"uci\":\"{uci}\",\"cp\":{score},\"depth\":{depth}}}"
+        ));
+    }
+    out.push_str("]}");
+    out
+}
+
 /// Evaluate a full-board Jungle FEN and return the top-`multipv` legal moves as JSON,
 /// ranked best-first, each with an exact side-to-move centipawn score.
 ///
@@ -34,17 +50,40 @@ pub fn analyze(fen: &str, nodes: u32, multipv: u32) -> String {
         Some(p) => p,
         None => return "{\"error\":\"bad_fen\"}".to_string(),
     };
-    // ranked: Vec<(from, to, score, depth_reached)>, already sorted descending by score.
-    let ranked = engine::root_move_values(&parsed, nodes as u64, 0);
-    let take = (multipv.max(1) as usize).min(ranked.len());
-    let mut out = String::from("{\"lines\":[");
-    for (i, &(from, to, score, depth)) in ranked.iter().take(take).enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let uci = engine::move_to_uci((from, to));
-        out.push_str(&format!("{{\"uci\":\"{uci}\",\"cp\":{score},\"depth\":{depth}}}"));
+    let mut session = engine::RootAnalysisSession::new(parsed, 0);
+    let ranked = session.advance(nodes as u64);
+    analysis_json(&ranked, multipv, nodes as u64)
+}
+
+/// Stateful, incrementally advanced analysis for the browser's continuous mode.
+///
+/// JavaScript calls `step` with bounded node slices and yields to the worker event loop
+/// between calls. Dropping this object cancels the search without an unbounded wasm call.
+#[wasm_bindgen]
+pub struct AnalysisSession {
+    inner: engine::RootAnalysisSession,
+    multipv: u32,
+}
+
+#[wasm_bindgen]
+impl AnalysisSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new(fen: &str, multipv: u32) -> Result<AnalysisSession, JsValue> {
+        let parsed =
+            engine::state_from_fen(fen).ok_or_else(|| JsValue::from_str("bad_fen"))?;
+        Ok(Self {
+            inner: engine::RootAnalysisSession::new(parsed, 0),
+            multipv: multipv.max(1),
+        })
     }
-    out.push_str("]}");
-    out
+
+    pub fn step(&mut self, nodes: u32) -> String {
+        let ranked = self.inner.advance(nodes as u64);
+        analysis_json(&ranked, self.multipv, self.inner.total_nodes())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn depth(&self) -> i32 {
+        self.inner.depth()
+    }
 }

@@ -11,10 +11,10 @@ with the same search core exposed to Python via PyO3.
 
 <p align="center">
   <a href="https://mistboard.com/?play=computer&gameSpecId=jungle">
-    <img src="assets/game.webp" alt="Misty Jungle level 3 beating level 2 in a full game, ending in a den win" width="440">
+    <img src="assets/game.webp" alt="MistyJungle winning a full game by marching a tiger into the enemy den" width="440">
   </a>
   <br>
-  <sub><i>Misty Jungle (level 3, red) vs level 2 — a full game, won by marching into the den.</i></sub>
+  <sub><i>MistyJungle's shipped 5M-node bot (red) against the 200K budget it replaced: 79 plies, and the tiger walks into the den.</i></sub>
 </p>
 
 **Play it in your browser:** challenge MistyJungle on
@@ -32,6 +32,10 @@ capturing every piece.
 Against the strongest open-source Dou Shou Qi engine I could find and run, MistyJungle scored
 W11-L2-D187 over 200 games, about +16 Elo in a drawish game. Its four-piece endgame play matches
 exact retrograde tablebases with no win, draw, or loss errors.
+
+How drawish: two copies at the same node budget draw every game. The search is deterministic, so
+a symmetric match is one fixed game, and at 5M nodes that game runs the full 100-ply no-progress
+limit without a single capture. Decisive results need a budget gap.
 
 Full build report:
 [Building a Dou Shou Qi Engine](https://brianhliou.com/posts/building-dou-shou-qi-engine/).

@@ -388,7 +388,7 @@ pub fn board_status(p_new: &Parsed, last_to: u8) -> Status {
     if legal_moves(p_new).is_empty() {
         return Status::Win(mover); // opponent has no legal move (stalemate = loss)
     }
-    if p_new.progress >= 100 {
+    if p_new.progress >= PROGRESS_LIMIT {
         return Status::Draw; // no-progress clock
     }
     Status::Playing
@@ -414,7 +414,7 @@ pub fn status_of(p: &Parsed) -> Status {
     if legal_moves(p).is_empty() {
         return Status::Win(1 - p.turn); // stalemate = loss for the side to move
     }
-    if p.progress >= 100 {
+    if p.progress >= PROGRESS_LIMIT {
         return Status::Draw;
     }
     Status::Playing
@@ -426,6 +426,20 @@ pub fn status_of(p: &Parsed) -> Status {
 // the enemy den; adjacency is nearly decisive) + trap vulnerability. This is a THROWAWAY
 // bootstrap — strength comes from depth + quiescence now, and tablebases/learned eval later.
 const VAL: [i32; 9] = [0, 65, 22, 30, 40, 50, 75, 90, 100]; // indexed by role 1..8
+/// Plies without a capture that end the game a draw. 200 = 100 moves by each side.
+///
+/// Raised from 100 on measurement: jungle shuffles far more than chess does, because rank
+/// decides every capture and pieces cannot trade freely, so long manoeuvring stretches with
+/// nothing taken are normal play rather than a stalled game. Over 100 self-play games per
+/// setting at a 5M-node budget, limit 100 gave 25% decisive with 14 games ending on this clock,
+/// limit 200 gave 33% with 1, and limit 400 gave 33% with 0. Threefold repetition adjudicates
+/// what is genuinely stuck.
+///
+/// This MUST match DEFAULT_JUNGLE_PROGRESS_CLOCK_LIMIT in the Mistboard platform kernel: the
+/// server adjudicates the draw and the engine evaluates toward it, and a mismatch means the
+/// engine scores every node past its own limit as drawn while the server plays on.
+pub const PROGRESS_LIMIT: u32 = 200;
+
 const WIN: i32 = 1_000_000;
 const INF: i32 = 2_000_000;
 const MAX_DEPTH: i32 = 24;
@@ -790,7 +804,7 @@ fn negamax(
         let tactical = p.squares[m.1 as usize] != 0 || m.1 == opp_den(p.turn);
         let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
             WIN - ply // den entry or captured the opponent's last piece
-        } else if child.progress >= 100 {
+        } else if child.progress >= PROGRESS_LIMIT {
             0 // no-progress draw
         } else if idx == 0 || !budget.ext {
             // Principal variation (or pre-Rung-1 baseline): full window, no reduction.
@@ -885,7 +899,7 @@ fn quiesce(
         let child = make_move(p, *m);
         let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
             WIN - ply
-        } else if child.progress >= 100 {
+        } else if child.progress >= PROGRESS_LIMIT {
             0
         } else {
             -quiesce(&child, net, tb, -beta, -alpha, ply + 1, z, side, budget)
@@ -992,7 +1006,7 @@ pub fn best_move_scored_ext(
             let child = make_move(p, *m);
             let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
                 WIN
-            } else if child.progress >= 100 {
+            } else if child.progress >= PROGRESS_LIMIT {
                 0
             } else {
                 -negamax(&child, net, tb, depth - 1, -INF, -alpha, 1, &z, side, &mut tt, &mut budget)
@@ -1127,7 +1141,7 @@ impl RootAnalysisSession {
                     || !color_has_pieces(&child, child.turn)
                 {
                     WIN
-                } else if child.progress >= 100 {
+                } else if child.progress >= PROGRESS_LIMIT {
                     0
                 } else {
                     -negamax(
@@ -1728,7 +1742,7 @@ fn nmx_fixed(p: &Parsed, depth: i32, mut alpha: i32, beta: i32, ply: i32) -> i32
         let child = make_move(p, *m);
         let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
             WIN - ply
-        } else if child.progress >= 100 {
+        } else if child.progress >= PROGRESS_LIMIT {
             0
         } else {
             -nmx_fixed(&child, depth - 1, -beta, -alpha, ply + 1)
@@ -1752,7 +1766,7 @@ pub fn best_move_fixed_depth(p: &Parsed, depth: i32) -> (u8, u8) {
         let child = make_move(p, *m);
         let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
             WIN
-        } else if child.progress >= 100 {
+        } else if child.progress >= PROGRESS_LIMIT {
             0
         } else {
             -nmx_fixed(&child, depth - 1, -INF, -alpha, 1)
@@ -1855,10 +1869,16 @@ mod tests {
         let m2 = uci_to_move("a2a1").unwrap();
         assert_eq!(board_status(&make_move(&p2, m2), m2.1), Status::Win(0));
 
-        // No-progress: clock at 100 after a quiet move → draw.
-        let p3 = state_from_fen("2L4/7/7/7/7/7/7/7/r6 r 99 1").unwrap();
-        let m3 = uci_to_move("c9c8").unwrap();
-        assert_eq!(board_status(&make_move(&p3, m3), m3.1), Status::Draw);
+        // No-progress: one quiet move short of the limit is still playing; the move that
+        // reaches it draws. Built off PROGRESS_LIMIT rather than a literal, so changing the
+        // rule cannot leave this test quietly asserting the old one.
+        let quiet = uci_to_move("c9c8").unwrap();
+        let below =
+            state_from_fen(&format!("2L4/7/7/7/7/7/7/7/r6 r {} 1", PROGRESS_LIMIT - 2)).unwrap();
+        assert_eq!(board_status(&make_move(&below, quiet), quiet.1), Status::Playing);
+        let at =
+            state_from_fen(&format!("2L4/7/7/7/7/7/7/7/r6 r {} 1", PROGRESS_LIMIT - 1)).unwrap();
+        assert_eq!(board_status(&make_move(&at, quiet), quiet.1), Status::Draw);
     }
 
     #[test]

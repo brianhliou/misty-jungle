@@ -1,4 +1,4 @@
-//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.3.
+//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.4.
 //!
 //! Perfect-information, deterministic 7×9 game → plain negamax αβ (no chance nodes, no
 //! redaction). Reuses the SAME board/movegen/search core as the PyO3 lib + Python bakeoffs
@@ -26,10 +26,17 @@ mod engine;
 
 use std::io::{self, BufRead, Write};
 
-const ENGINE_NAME: &str = "MistyJungle 0.0.3";
+const ENGINE_NAME: &str = "MistyJungle 0.0.4";
 const DEFAULT_MOVETIME_MS: u64 = 1000;
 const DEFAULT_NODES: u64 = 1_000_000;
-const DRAW_CONTEMPT: i32 = 1;
+// A draw is worth -DRAW_CONTEMPT to the side to move, so a higher value makes an ahead-or-equal
+// side decline a repetition and play on. Raised from 1 (effectively indifferent) on measurement:
+// at a 5M-node budget over 100 self-play games per setting, contempt 1 gave 32% decisive games,
+// 30 gave 34%, and 80 gave 50%. A self-play sweep alone proves nothing there, since both sides
+// declining repetitions produces more decisive games by construction, so the two values were
+// also faced off directly over 200 colour-swapped games: contempt 80 scored W30-L14-D156. It
+// wins twice as often as it loses, so the decisiveness is not bought with worse play.
+const DRAW_CONTEMPT: i32 = 80;
 
 fn parse_position_command(line: &str) -> Option<(engine::Parsed, Vec<String>)> {
     let rest = line.strip_prefix("position")?.trim();
@@ -68,6 +75,12 @@ fn main() {
             "uci" => {
                 println!("id name {ENGINE_NAME}");
                 println!("id author Mistboard");
+                // The no-capture clock is a RULE the host also enforces, and contempt shapes
+                // every decision. An engine running different values than its host is invisible
+                // until games diverge, so state both at handshake: they land in the host's engine
+                // boot log, where a mismatch is one grep rather than a mystery.
+                println!("info string progress_limit {}", engine::PROGRESS_LIMIT);
+                println!("info string draw_contempt {DRAW_CONTEMPT}");
                 println!("uciok");
             }
             "isready" => println!("readyok"),

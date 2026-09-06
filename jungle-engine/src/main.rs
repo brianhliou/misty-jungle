@@ -1,4 +1,4 @@
-//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.4.
+//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.5.
 //!
 //! Perfect-information, deterministic 7×9 game → plain negamax αβ (no chance nodes, no
 //! redaction). Reuses the SAME board/movegen/search core as the PyO3 lib + Python bakeoffs
@@ -11,22 +11,36 @@
 //!   ucinewgame                       -> clear position
 //!   position fen <FEN> [reps <FEN>;...] [moves ...]
 //!                                    -> store the position + twice-seen repetition seeds
-//!   go [movetime <ms>] [nodes <n>]   -> search, emit "info score cp <n> pv <uci>" then
-//!                                       "bestmove <uci>" (or "bestmove (none)" at a terminal)
+//!   go [movetime <ms>] [nodes <n>]   -> search, emit
+//!                                       "info depth <d> nodes <n> nps <x> time <ms> score cp <n>
+//!                                        pv <uci>" then "bestmove <uci>" (or "bestmove (none)"
+//!                                       at a terminal)
 //!   quit                             -> exit
 //!
 //! The `info … score cp` line is what the platform's whole-game analysis reads (the move
 //! alone drives PvE play; analysis needs the position's evaluation). Score is side-to-move
 //! POV in the search's native units (WIN = 1_000_000); the analysis layer owns POV
 //! normalization + the win% curve, so the raw score is emitted as-is.
+//!
+//! The `depth`/`nodes`/`nps`/`time` fields in front of it are what the search CONSUMED, and
+//! they exist so the host's per-move decision artifact can compare consumption against the
+//! budget it granted. Without them wall time is the only signal, and wall time cannot tell
+//! "the search got slower" from "the host got slower" — the same binary on the same position
+//! took 2,227 ms at loadavg 14.9 and 3,587 ms at loadavg 86.3. `nodes` is therefore the real
+//! visited count, never the requested budget echoed back: a field that repeats its own input
+//! looks like measurement and answers nothing. `depth` is the last iterative-deepening
+//! iteration that COMPLETED, and is omitted (rather than reported as 0) when the search was
+//! cut short before finishing one; `nps` is omitted when elapsed rounds to 0 ms. Omitting a
+//! field we do not have beats inventing one.
 
 #[path = "../../jungle_rust/src/engine.rs"]
 #[allow(dead_code)] // engine.rs also exposes the PyO3-facing helpers, unused here
 mod engine;
 
 use std::io::{self, BufRead, Write};
+use std::time::Instant;
 
-const ENGINE_NAME: &str = "MistyJungle 0.0.4";
+const ENGINE_NAME: &str = "MistyJungle 0.0.5";
 const DEFAULT_MOVETIME_MS: u64 = 1000;
 const DEFAULT_NODES: u64 = 1_000_000;
 // A draw is worth -DRAW_CONTEMPT to the side to move, so a higher value makes an ahead-or-equal
@@ -58,6 +72,24 @@ fn parse_position_command(line: &str) -> Option<(engine::Parsed, Vec<String>)> {
         None => (fen_and_reps, Vec::new()),
     };
     engine::state_from_fen(fen).map(|state| (state, rep_fens))
+}
+
+/// Build the standard UCI search-info line, in the standard field order, so a generic parser
+/// picks it up. Fields the search did not actually produce are omitted, never estimated.
+fn search_info_line(stats: &engine::SearchStats, elapsed_ms: u64, score: i32, pv: &str) -> String {
+    let mut line = String::from("info");
+    if stats.depth > 0 {
+        line.push_str(&format!(" depth {}", stats.depth));
+    }
+    line.push_str(&format!(" nodes {}", stats.nodes));
+    if elapsed_ms > 0 {
+        line.push_str(&format!(
+            " nps {}",
+            stats.nodes.saturating_mul(1000) / elapsed_ms
+        ));
+    }
+    line.push_str(&format!(" time {elapsed_ms} score cp {score} pv {pv}"));
+    line
 }
 
 fn main() {
@@ -115,7 +147,8 @@ fn main() {
                 }
                 match &current {
                     Some(p) => {
-                        let (m, score) = engine::best_move_scored_full(
+                        let started = Instant::now();
+                        let (m, score, stats) = engine::best_move_scored_stats(
                             p,
                             None,
                             None,
@@ -123,14 +156,16 @@ fn main() {
                             movetime,
                             &rep_fens,
                             DRAW_CONTEMPT,
+                            true,
                         );
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
                         if m.0 == 255 {
                             println!("bestmove (none)");
                         } else {
                             let uci = engine::move_to_uci(m);
                             // Side-to-move POV score; the analysis layer normalizes POV and
                             // maps it through the win% curve (large win/loss magnitudes clamp).
-                            println!("info score cp {score} pv {uci}");
+                            println!("{}", search_info_line(&stats, elapsed_ms, score, &uci));
                             println!("bestmove {uci}");
                         }
                     }
@@ -165,6 +200,50 @@ mod tests {
             parse_position_command(&format!("position fen {CURRENT} moves b2c2")).unwrap();
         assert_eq!(engine::to_fen(&state), CURRENT);
         assert!(reps.is_empty());
+    }
+
+    #[test]
+    fn search_info_reports_real_consumption_not_the_budget() {
+        let (state, reps) =
+            parse_position_command(&format!("position fen {CURRENT} reps {REPEATED}")).unwrap();
+        let budget = 200_000;
+        let (best, score, stats) = engine::best_move_scored_stats(
+            &state,
+            None,
+            None,
+            budget,
+            60_000,
+            &reps,
+            DRAW_CONTEMPT,
+            true,
+        );
+        // The node count is the search's own, so it lands near the cap without being it.
+        assert!(stats.nodes > budget / 2, "{} nodes", stats.nodes);
+        assert!(stats.nodes <= budget + 1, "{} nodes", stats.nodes);
+        assert!(stats.depth >= 1);
+        let line = search_info_line(&stats, 123, score, &engine::move_to_uci(best));
+        assert!(
+            line.starts_with(&format!(
+                "info depth {} nodes {} nps ",
+                stats.depth, stats.nodes
+            )),
+            "{line}"
+        );
+        assert!(
+            line.contains(&format!(" time 123 score cp {score} pv ")),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn search_info_omits_fields_the_search_did_not_produce() {
+        // Nothing completed and no measurable elapsed: depth and nps are absent, not zeroed
+        // or estimated. `nodes`, `time`, `score` and `pv` are always present.
+        let stats = engine::SearchStats { nodes: 7, depth: 0 };
+        assert_eq!(
+            search_info_line(&stats, 0, -12, "a1b1"),
+            "info nodes 7 time 0 score cp -12 pv a1b1"
+        );
     }
 
     #[test]

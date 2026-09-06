@@ -940,6 +940,18 @@ pub fn best_move_scored_full(
     best_move_scored_ext(p, net, tb, node_budget, time_ms, rep_fens, contempt, true)
 }
 
+/// What a search actually CONSUMED, as opposed to what it was allowed. `nodes` is the real
+/// visited-node count (never the budget echoed back) and `depth` is the last iterative-deepening
+/// iteration that ran to COMPLETION (0 if even the first one was cut short — an incomplete depth
+/// is discarded, so it is not "reached"). A caller comparing these against the budget it handed
+/// in can tell a work-bound search from a time-bound one: nodes at the cap means the node budget
+/// bound, nodes far short of it with the clock at the ceiling means the host was slow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchStats {
+    pub nodes: u64,
+    pub depth: i32,
+}
+
 /// Like `best_move_scored_full` but `ext` toggles the Rung-1 search extensions
 /// (LMR + killer/history ordering + PVS). `ext=false` is the pre-Rung-1 baseline,
 /// for in-build A/B comparison.
@@ -954,9 +966,28 @@ pub fn best_move_scored_ext(
     contempt: i32,
     ext: bool,
 ) -> ((u8, u8), i32) {
+    let (m, score, _) =
+        best_move_scored_stats(p, net, tb, node_budget, time_ms, rep_fens, contempt, ext);
+    (m, score)
+}
+
+/// Like `best_move_scored_ext` but also returns what the search consumed (`SearchStats`).
+/// This is the body every other entry point above funnels into: the search itself is
+/// byte-for-byte the same, the stats are read off the budget it already keeps.
+#[allow(clippy::too_many_arguments)]
+pub fn best_move_scored_stats(
+    p: &Parsed,
+    net: Option<&Net>,
+    tb: Option<&Store>,
+    node_budget: u64,
+    time_ms: u64,
+    rep_fens: &[String],
+    contempt: i32,
+    ext: bool,
+) -> ((u8, u8), i32, SearchStats) {
     let root = legal_moves(p);
     if root.is_empty() {
-        return ((255, 255), -WIN);
+        return ((255, 255), -WIN, SearchStats::default());
     }
     let (z, side) = build_zobrist();
     let key = zkey(p, &z, side);
@@ -982,6 +1013,7 @@ pub fn best_move_scored_ext(
     };
     let mut best = root[0];
     let mut best_score = -INF;
+    let mut completed_depth = 0;
 
     for depth in 1..=MAX_DEPTH {
         budget.path.clear();
@@ -1025,6 +1057,7 @@ pub fn best_move_scored_ext(
         }
         best = local_best;
         best_score = local_score;
+        completed_depth = depth;
         tt[(key & TT_MASK) as usize] = TtEntry {
             key,
             depth,
@@ -1036,7 +1069,14 @@ pub fn best_move_scored_ext(
             break; // forced win found — no deeper search needed
         }
     }
-    (best, best_score)
+    (
+        best,
+        best_score,
+        SearchStats {
+            nodes: budget.nodes,
+            depth: completed_depth,
+        },
+    )
 }
 
 /// Exact per-root-move values for in-browser MultiPV (the WebAssembly client engine). Runs the

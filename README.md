@@ -40,6 +40,10 @@ limit without a single capture. Decisive results need a budget gap.
 Full build report:
 [Building a Dou Shou Qi Engine](https://brianhliou.com/posts/building-dou-shou-qi-engine/).
 
+MistyJungle is the jungle bot on [mistboard.com](https://mistboard.com/rules/jungle), at 5M nodes a
+move. An engine that beats it at the same node budget over 200 games takes its seat, with your name
+on it; the terms are at [brianhliou.com/challenges](https://brianhliou.com/challenges/).
+
 ## Build
 
 A prebuilt UCI binary ships with each [release](https://github.com/brianhliou/misty-jungle/releases/latest).

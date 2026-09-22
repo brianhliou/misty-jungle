@@ -305,13 +305,12 @@ fn moves_from(p: &Parsed, from: u8, out: &mut Vec<(u8, u8)>) {
         try_land(p, from, to, out);
     }
 
-    // Lion (role 7: both axes) / Tiger (role 6: vertical only) river jumps.
+    // Lion (role 7) and Tiger (role 6) river jumps, both axes for both. The tiger was
+    // vertical-only until 0.0.6 (mistboard #430): that reading exists in English Wikipedia
+    // and nowhere else checked (Tencent QQ游戏, Leiden, KataGo-AnimalChess all give the
+    // tiger the lion's jump), and the platform kernel changed with this.
     if role == 7 || role == 6 {
-        let dirs: &[(i32, i32)] = if role == 7 {
-            &[(1, 0), (-1, 0), (0, 1), (0, -1)]
-        } else {
-            &[(0, 1), (0, -1)]
-        };
+        let dirs: &[(i32, i32)] = &[(1, 0), (-1, 0), (0, 1), (0, -1)];
         for &(df, dr) in dirs {
             let (mut nf, mut nr) = (f + df, r + dr);
             if nf < 0 || nf >= 7 || nr < 0 || nr >= 9 || !is_water((nr * 7 + nf) as u8) {
@@ -1865,6 +1864,23 @@ mod tests {
         assert!(m.contains(&"c3b3".to_string())); // leopard steps left
         assert!(!m.contains(&"c3c4".to_string())); // leopard cannot enter water
         assert!(!m.contains(&"a1d1".to_string())); // no teleport into own den
+    }
+
+    #[test]
+    fn tiger_jumps_lake_on_both_axes_like_the_lion() {
+        // Red tiger at a4 clears the west lake sideways (b4/c4) to d4, and at b3 along it to b7.
+        let p = state_from_fen("7/7/7/7/7/T6/7/7/7 r 0 1").unwrap();
+        assert!(ucis(&p).contains(&"a4d4".to_string()));
+        let along = state_from_fen("7/7/7/7/7/7/1T5/7/7 r 0 1").unwrap();
+        assert!(ucis(&along).contains(&"b3b7".to_string()));
+        // From the central lane d5 it clears BOTH lakes; a leopard there only steps.
+        let mid = state_from_fen("7/7/7/7/3T3/7/7/7/7 r 0 1").unwrap();
+        assert!(ucis(&mid).contains(&"d5a5".to_string()) && ucis(&mid).contains(&"d5g5".to_string()));
+        let leopard = state_from_fen("7/7/7/7/3P3/7/7/7/7 r 0 1").unwrap();
+        assert!(!ucis(&leopard).contains(&"d5a5".to_string()));
+        // A rat in the lake blocks the sideways jump too.
+        let blocked = state_from_fen("7/7/7/7/7/T1r4/7/7/7 r 0 1").unwrap();
+        assert!(!ucis(&blocked).contains(&"a4d4".to_string()));
     }
 
     #[test]

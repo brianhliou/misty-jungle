@@ -1,4 +1,4 @@
-//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.5.
+//! MistyJungle — standalone vanilla Jungle (Dou Shou Qi) UCI engine, v0.0.6.
 //!
 //! Perfect-information, deterministic 7×9 game → plain negamax αβ (no chance nodes, no
 //! redaction). Reuses the SAME board/movegen/search core as the PyO3 lib + Python bakeoffs
@@ -40,7 +40,7 @@ mod engine;
 use std::io::{self, BufRead, Write};
 use std::time::Instant;
 
-const ENGINE_NAME: &str = "MistyJungle 0.0.5";
+const ENGINE_NAME: &str = "MistyJungle 0.0.6";
 const DEFAULT_MOVETIME_MS: u64 = 1000;
 const DEFAULT_NODES: u64 = 1_000_000;
 // A draw is worth -DRAW_CONTEMPT to the side to move, so a higher value makes an ahead-or-equal

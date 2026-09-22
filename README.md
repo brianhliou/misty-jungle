@@ -24,8 +24,12 @@ with the same search core exposed to Python via PyO3.
 
 Dou Shou Qi is a 7×9 race-and-capture game. Eight animals rank from rat to elephant, and a higher animal
 captures a lower one, with one twist: the rat captures the elephant. Rivers split the board and
-only the rat may swim them; lions and tigers leap across. You win by reaching the enemy den or
-capturing every piece.
+only the rat may swim them; lions and tigers leap across, lengthwise or sideways, and a rat in
+the water blocks the leap. You win by reaching the enemy den or capturing every piece.
+
+Rule sets differ on the tiger. English Wikipedia lets only the lion leap sideways; Tencent's
+QQ游戏 rules, Leiden's Dou Shou Qi page and KataGo-AnimalChess give the tiger the same leap as
+the lion, and so does MistyJungle from 0.0.6 (earlier builds followed Wikipedia).
 
 ## Strength
 

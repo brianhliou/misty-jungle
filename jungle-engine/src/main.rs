@@ -40,7 +40,7 @@ mod engine;
 use std::io::{self, BufRead, Write};
 use std::time::Instant;
 
-const ENGINE_NAME: &str = "MistyJungle 0.0.6";
+const ENGINE_NAME: &str = "MistyJungle 0.0.7";
 const DEFAULT_MOVETIME_MS: u64 = 1000;
 const DEFAULT_NODES: u64 = 1_000_000;
 // A draw is worth -DRAW_CONTEMPT to the side to move, so a higher value makes an ahead-or-equal
@@ -51,6 +51,47 @@ const DEFAULT_NODES: u64 = 1_000_000;
 // also faced off directly over 200 colour-swapped games: contempt 80 scored W30-L14-D156. It
 // wins twice as often as it loses, so the decisiveness is not bought with worse play.
 const DRAW_CONTEMPT: i32 = 80;
+
+fn parse_go(line: &str) -> Result<(u64, u64, engine::SearchSkill), &'static str> {
+    let mut nodes = DEFAULT_NODES;
+    let mut movetime = DEFAULT_MOVETIME_MS;
+    let mut skill = engine::SearchSkill::default();
+    let mut words = line.split_whitespace().skip(1);
+    while let Some(k) = words.next() {
+        match k {
+            "nodes" => {
+                nodes = words
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|v| *v > 0)
+                    .ok_or("nodes")?
+            }
+            "movetime" => {
+                movetime = words
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("movetime")?
+            }
+            "depth" => {
+                skill.max_depth = words
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|v| (1..=24).contains(v))
+                    .ok_or("depth")?
+            }
+            "noise" => {
+                skill.noise = words
+                    .next()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite() && (0.0..=100_000.0).contains(v))
+                    .ok_or("noise")?
+            }
+            "seed" => skill.seed = words.next().and_then(|v| v.parse().ok()).ok_or("seed")?,
+            _ => {}
+        }
+    }
+    Ok((nodes, movetime, skill))
+}
 
 fn parse_position_command(line: &str) -> Option<(engine::Parsed, Vec<String>)> {
     let rest = line.strip_prefix("position")?.trim();
@@ -113,6 +154,7 @@ fn main() {
                 // boot log, where a mismatch is one grep rather than a mystery.
                 println!("info string progress_limit {}", engine::PROGRESS_LIMIT);
                 println!("info string draw_contempt {DRAW_CONTEMPT}");
+                println!("info string classical_skill 1");
                 println!("uciok");
             }
             "isready" => println!("readyok"),
@@ -127,28 +169,19 @@ fn main() {
                 }
             }
             "go" => {
-                let mut movetime = DEFAULT_MOVETIME_MS;
-                let mut nodes = DEFAULT_NODES;
-                let mut t = line.split_whitespace().skip(1);
-                while let Some(k) = t.next() {
-                    match k {
-                        "movetime" => {
-                            if let Some(v) = t.next() {
-                                movetime = v.parse().unwrap_or(movetime);
-                            }
-                        }
-                        "nodes" => {
-                            if let Some(v) = t.next() {
-                                nodes = v.parse().unwrap_or(nodes);
-                            }
-                        }
-                        _ => {}
+                let (nodes, movetime, skill) = match parse_go(line) {
+                    Ok(limits) => limits,
+                    Err(field) => {
+                        println!("info string invalid go {field}");
+                        println!("bestmove (none)");
+                        io::stdout().flush().ok();
+                        continue;
                     }
-                }
+                };
                 match &current {
                     Some(p) => {
                         let started = Instant::now();
-                        let (m, score, stats) = engine::best_move_scored_stats(
+                        let (m, score, stats) = engine::best_move_scored_skill(
                             p,
                             None,
                             None,
@@ -157,6 +190,7 @@ fn main() {
                             &rep_fens,
                             DRAW_CONTEMPT,
                             true,
+                            skill,
                         );
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if m.0 == 255 {
@@ -183,8 +217,115 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn skill_limits_fail_closed_and_defaults_preserve_the_top_search() {
+        let (nodes, time, skill) = parse_go("go").unwrap();
+        assert_eq!(
+            (nodes, time, skill.max_depth, skill.noise),
+            (DEFAULT_NODES, DEFAULT_MOVETIME_MS, 24, 0.0)
+        );
+        for bad in [
+            "go noise NaN",
+            "go noise -1",
+            "go seed -1",
+            "go depth 0",
+            "go depth 25",
+            "go nodes 0",
+            "go noise",
+        ] {
+            assert!(parse_go(bad).is_err(), "{bad}");
+        }
+        let (_, _, skill) = parse_go("go depth 2 noise 350 seed 42").unwrap();
+        assert_eq!((skill.max_depth, skill.noise, skill.seed), (2, 350.0, 42));
+    }
+
+    #[test]
+    fn seeded_noise_is_reproducible_varied_legal_and_depth_bounded() {
+        let (p, _) =
+            parse_position_command("position fen l5t/1d3c1/r1p1w1e/7/7/7/E1W1P1R/1C3D1/T5L r 0 1")
+                .unwrap();
+        let run = |seed| {
+            engine::best_move_scored_skill(
+                &p,
+                None,
+                None,
+                20_000,
+                0,
+                &[],
+                DRAW_CONTEMPT,
+                true,
+                engine::SearchSkill {
+                    max_depth: 1,
+                    noise: 1000.0,
+                    seed,
+                },
+            )
+        };
+        let a = run(42);
+        let b = run(42);
+        assert_eq!(
+            (a.0, a.1, a.2.nodes, a.2.depth),
+            (b.0, b.1, b.2.nodes, b.2.depth)
+        );
+        let mut choices = std::collections::HashSet::new();
+        for seed in 0..32 {
+            let (m, _, stats) = run(seed);
+            assert!(engine::legal_moves(&p).contains(&m));
+            assert_eq!(stats.depth, 1);
+            choices.insert(m);
+        }
+        assert!(choices.len() > 4);
+    }
+
     const CURRENT: &str = "7/3p3/1Tcedl1/3w3/1R1L3/4r2/4WE1/1t2C2/2D4 b 11 45";
     const REPEATED: &str = "7/3p3/1Tcedl1/3w3/1R1L3/4r2/4WE1/2t1C2/2D4 r 4 42";
+
+    #[test]
+    fn default_search_matches_frozen_shipping_006_vectors() {
+        // Produced by the shipping 5717f7f tree, not by a second wrapper around
+        // this implementation. Time is disabled; move/score/depth/nodes are exact.
+        let vectors = [
+            (
+                "t5l/1cwp2d/e5r/7/7/R6/2P1WE1/LD4C/6T r 8 5",
+                "a2a3",
+                21,
+                9,
+                200001,
+            ),
+            (
+                "tc5/5dl/e1w2pr/7/7/7/RP4E/5WC/LD4T r 10 6",
+                "a1a2",
+                -9,
+                9,
+                200003,
+            ),
+            (
+                "t5l/1c1p3/ew3dr/7/7/3P3/R3WCE/D6/L5T r 12 7",
+                "a1b1",
+                6,
+                8,
+                200003,
+            ),
+        ];
+        for (fen, best, cp, depth, nodes) in vectors {
+            let p = engine::state_from_fen(fen).unwrap();
+            let (m, score, stats) = engine::best_move_scored_stats(
+                &p,
+                None,
+                None,
+                200_000,
+                0,
+                &[],
+                DRAW_CONTEMPT,
+                true,
+            );
+            assert_eq!(
+                (engine::move_to_uci(m), score, stats.depth, stats.nodes),
+                (best.to_owned(), cp, depth, nodes),
+                "{fen}"
+            );
+        }
+    }
 
     #[test]
     fn position_command_parses_repetition_seed_fens() {
@@ -250,15 +391,8 @@ mod tests {
     fn reported_game_avoids_the_immediate_threefold_draw() {
         let (state, reps) =
             parse_position_command(&format!("position fen {CURRENT} reps {REPEATED}")).unwrap();
-        let (best, _) = engine::best_move_scored_full(
-            &state,
-            None,
-            None,
-            500_000,
-            4_000,
-            &reps,
-            DRAW_CONTEMPT,
-        );
+        let (best, _) =
+            engine::best_move_scored_full(&state, None, None, 500_000, 4_000, &reps, DRAW_CONTEMPT);
         assert_ne!(engine::move_to_uci(best), "b2c2");
     }
 }

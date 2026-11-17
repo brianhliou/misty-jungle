@@ -951,6 +951,32 @@ pub struct SearchStats {
     pub depth: i32,
 }
 
+/// Optional classical difficulty controls. Defaults preserve the shipping search.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchSkill {
+    pub max_depth: i32,
+    /// Gumbel noise in native evaluation units, applied only to exact root values.
+    pub noise: f64,
+    pub seed: u64,
+}
+
+impl Default for SearchSkill {
+    fn default() -> Self {
+        Self { max_depth: MAX_DEPTH, noise: 0.0, seed: 0 }
+    }
+}
+
+fn root_noise(seed: u64, key: u64, m: (u8, u8)) -> f64 {
+    let mut x = seed ^ key ^ ((m.0 as u64) << 8) ^ m.1 as u64;
+    x = x.wrapping_add(0x9e3779b97f4a7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^= x >> 31;
+    // Open interval (0,1), including when the integer hash is zero or maximal.
+    let u = ((x >> 12) as f64 + 0.5) / ((1u64 << 52) as f64);
+    -(-u.ln()).ln()
+}
+
 /// Like `best_move_scored_full` but `ext` toggles the Rung-1 search extensions
 /// (LMR + killer/history ordering + PVS). `ext=false` is the pre-Rung-1 baseline,
 /// for in-build A/B comparison.
@@ -984,6 +1010,23 @@ pub fn best_move_scored_stats(
     contempt: i32,
     ext: bool,
 ) -> ((u8, u8), i32, SearchStats) {
+    best_move_scored_skill(p, net, tb, node_budget, time_ms, rep_fens, contempt, ext, SearchSkill::default())
+}
+
+/// Noisy tiers search EVERY root candidate with a full window before selection.
+/// A fail-low alpha-beta bound is not an exact value suitable for noisy ranking.
+#[allow(clippy::too_many_arguments)]
+pub fn best_move_scored_skill(
+    p: &Parsed,
+    net: Option<&Net>,
+    tb: Option<&Store>,
+    node_budget: u64,
+    time_ms: u64,
+    rep_fens: &[String],
+    contempt: i32,
+    ext: bool,
+    skill: SearchSkill,
+) -> ((u8, u8), i32, SearchStats) {
     let root = legal_moves(p);
     if root.is_empty() {
         return ((255, 255), -WIN, SearchStats::default());
@@ -1014,7 +1057,7 @@ pub fn best_move_scored_stats(
     let mut best_score = -INF;
     let mut completed_depth = 0;
 
-    for depth in 1..=MAX_DEPTH {
+    for depth in 1..=skill.max_depth.clamp(1, MAX_DEPTH) {
         budget.path.clear();
         budget.path.push(key); // root key on the path so a line returning here is a repetition
         let tt_mv = {
@@ -1033,6 +1076,7 @@ pub fn best_move_scored_stats(
         let mut alpha = -INF;
         let mut local_best = moves[0];
         let mut local_score = -INF;
+        let mut local_rank = f64::NEG_INFINITY;
         for m in &moves {
             let child = make_move(p, *m);
             let val = if m.1 == opp_den(p.turn) || !color_has_pieces(&child, child.turn) {
@@ -1040,14 +1084,26 @@ pub fn best_move_scored_stats(
             } else if child.progress >= PROGRESS_LIMIT {
                 0
             } else {
-                -negamax(&child, net, tb, depth - 1, -INF, -alpha, 1, &z, side, &mut tt, &mut budget)
+                -negamax(&child, net, tb, depth - 1, -INF,
+                    if skill.noise > 0.0 { INF } else { -alpha },
+                    1, &z, side, &mut tt, &mut budget)
             };
             if budget.aborted {
                 break;
             }
-            if val > local_score {
+            let rank = if val >= WIN - MAX_DEPTH {
+                // Every level converts a win it actually found. Among proven wins,
+                // keep win-distance ordering rather than perturbing the result.
+                val as f64 + 100_000_000.0
+            } else if skill.noise > 0.0 {
+                val as f64 + skill.noise * root_noise(skill.seed, key, *m)
+            } else {
+                val as f64
+            };
+            if rank > local_rank {
                 local_score = val;
                 local_best = *m;
+                local_rank = rank;
             }
             alpha = alpha.max(val);
         }
@@ -1057,13 +1113,11 @@ pub fn best_move_scored_stats(
         best = local_best;
         best_score = local_score;
         completed_depth = depth;
-        tt[(key & TT_MASK) as usize] = TtEntry {
-            key,
-            depth,
-            value: local_score,
-            flag: 1,
-            mv: local_best,
-        };
+        if skill.noise == 0.0 {
+            tt[(key & TT_MASK) as usize] = TtEntry {
+                key, depth, value: local_score, flag: 1, mv: local_best,
+            };
+        }
         if local_score >= WIN - MAX_DEPTH {
             break; // forced win found — no deeper search needed
         }
